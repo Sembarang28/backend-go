@@ -17,11 +17,11 @@ backend-go/
 │   ├── infra_operations_guide.md          # Panduan deployment Kubernetes, observability, dan runbook
 │   ├── postgres_replication_guide.md      # Panduan PostgreSQL critical reads dan replication lag
 │   ├── redis_replication_guide.md         # Panduan Redis routing, critical reads, dan replication lag
+│   ├── contributing_guide.md               # Panduan developer untuk berkontribusi
 │   ├── audit_guide.md                       # Pilihan audit log-only atau persistence PostgreSQL
 │   ├── outbox_guide.md                      # PostgreSQL persistence, transactions, worker setup, and adapter extensibility
 │   ├── reconciliation_guide.md              # Implementing and operating reconciliation jobs
 │   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
-│   ├── project.md                  # Comprehensive architecture documentation
 ├── internal/
 │   ├── config/                     # Configuration loader (.env & system environment)
 │   ├── domain/                     # Shared domain errors; sample domains are optional
@@ -53,6 +53,14 @@ backend-go/
 ├── go.mod
 └── README.md
 ```
+
+Panduan memulai kontribusi tersedia di
+[docs/contributing_guide.md](docs/contributing_guide.md).
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE)
+for the full license text.
 
 ---
 
