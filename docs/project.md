@@ -65,6 +65,7 @@ Setiap layer bergantung pada **Interface** (Dependency Inversion), memungkinkan 
 - **Distributed Locking (`lock.go`)**: Redlock/SETNX via Redis dengan safe unlock menggunakan Lua script agar aman di-deploy pada multiple pod replika di Kubernetes tanpa race condition.
 - **Partitioned Batching (`worker.go`)**: Multi-partition worker pool untuk memproses event outbox secara paralel.
 - **Dead Letter Queue (DLQ)**: Otomatis memindahkan event yang gagal setelah melebihi `MaxRetries` ke storage DLQ dengan exponential backoff.
+- **PostgreSQL Persistence (`postgres_repository.go`)**: Implementasi `Repository` memakai `database/sql`; simpan event melalui transaksi bisnis yang sama. Repository interface tetap mendukung adapter database lain. Lihat [panduan outbox](./outbox_guide.md).
 
 ### B. Idempotency Engine (`internal/pkg/idempotency`)
 - **Universal Middleware (`middleware.go` & `grpc.go`)**: Mencegah double-spend / duplikasi request HTTP (`X-Idempotency-Key`) dan gRPC metadata (`x-idempotency-key`).

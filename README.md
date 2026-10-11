@@ -14,6 +14,7 @@ backend-go/
 │   ├── docker/                     # Multi-stage hardened Dockerfile
 │   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
 ├── docs/
+│   ├── outbox_guide.md            # PostgreSQL persistence, transactions, worker setup, and adapter extensibility
 │   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
 │   ├── project.md                  # Comprehensive architecture documentation
 │   └── proto_migration_guide.md    # Centralized Protobuf migration guide
@@ -58,6 +59,7 @@ backend-go/
 - **Partitioned Batching (`worker.go`)**: Multi-partition worker pool for high-throughput event processing.
 - **Dead Letter Queue (`DLQ`)**: Automatic routing to DLQ when event retry limit is reached with exponential backoff.
 - **Trace Context Propagation**: Preserves W3C `traceparent` from request headers to message broker payload headers.
+- **Persistence**: `memory_repository.go` provides the in-memory test adapter and `postgres_repository.go` provides PostgreSQL persistence backed by `database/sql`. The PostgreSQL repository can share the business transaction when saving events. See the [Outbox Package Guide](docs/outbox_guide.md) for setup and adding other database adapters.
 
 ### 2. Idempotency Engine (`internal/pkg/idempotency`)
 - **HTTP Middleware (`HTTPMiddleware`)**: Intercepts requests with `X-Idempotency-Key` header, locks in-flight processing, caches response payloads, and replays completed responses on duplicate calls.

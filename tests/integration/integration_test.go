@@ -6,7 +6,6 @@ package integration_test
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"backend-go/internal/repository"
 	"backend-go/internal/usecase"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +52,7 @@ func TestEndToEndWithTestcontainers(t *testing.T) {
 	require.NoError(t, err)
 
 	// Connect to PostgreSQL
-	db, err := sql.Open("postgres", connStr)
+	db, err := sql.Open("pgx", connStr)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -97,7 +97,6 @@ func TestEndToEndWithTestcontainers(t *testing.T) {
 	assert.Equal(t, 1, user.ID)
 
 	// 6. Test Outbox Worker with Real Redis Distributed Lock
-	outboxRepo := outbox.NewMemoryRepository()
 	outboxLock := outbox.NewRedisDistributedLock(redisClient)
 
 	// Acquire and release distributed lock
@@ -107,4 +106,87 @@ func TestEndToEndWithTestcontainers(t *testing.T) {
 
 	err = outboxLock.Release(ctx, "outbox:lock:partition:0", token)
 	assert.NoError(t, err)
+}
+
+func TestPostgresOutboxRepository(t *testing.T) {
+	ctx := context.Background()
+
+	pgContainer, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("outbox_test"),
+		tcpostgres.WithUsername("testuser"),
+		tcpostgres.WithPassword("testpass"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
+
+	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	db, err := sql.Open("pgx", connStr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, db.PingContext(ctx))
+	require.NoError(t, migration.NewEngine().Run(ctx, db))
+
+	repo := outbox.NewPostgresRepository(db)
+	event := &outbox.OutboxEvent{
+		ID:            "event-pending",
+		AggregateType: "Order",
+		AggregateID:   "42",
+		EventType:     "order.created",
+		Payload:       []byte(`{"id":42}`),
+		Headers:       map[string]string{"traceparent": "00-test"},
+		Partition:     2,
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	require.NoError(t, outbox.NewPostgresRepository(tx).Save(ctx, event))
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM outbox_events WHERE id = $1", event.ID).Scan(&count))
+	assert.Zero(t, count, "transaction-bound Save must not become visible before commit")
+	require.NoError(t, tx.Rollback())
+
+	require.NoError(t, repo.Save(ctx, event))
+	pending, err := repo.FetchPendingBatch(ctx, 2, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, event.ID, pending[0].ID)
+	assert.Equal(t, event.Headers, pending[0].Headers)
+	require.NoError(t, repo.MarkProcessing(ctx, []string{event.ID}))
+	require.NoError(t, repo.MarkFailed(ctx, event.ID, "temporary failure", time.Now().Add(-time.Second)))
+	pending, err = repo.FetchPendingBatch(ctx, 2, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, 1, pending[0].RetryCount)
+	require.NoError(t, repo.MarkPublished(ctx, event.ID))
+
+	deleted, err := repo.DeletePublishedBefore(ctx, time.Now().Add(time.Second), 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+
+	dlqEvent := &outbox.OutboxEvent{
+		ID:         "event-dlq",
+		EventType:  "order.failed",
+		Payload:    []byte(`{"id":99}`),
+		Headers:    map[string]string{"source": "test"},
+		RetryCount: 3,
+	}
+	require.NoError(t, repo.Save(ctx, dlqEvent))
+	require.NoError(t, repo.MoveToDLQ(ctx, dlqEvent.ID, "permanent failure"))
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT status FROM outbox_events WHERE id = $1", dlqEvent.ID).Scan(&dlqEvent.Status))
+	assert.Equal(t, outbox.StatusDLQ, dlqEvent.Status)
+	var dlqCount int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dlq_events WHERE original_event_id = $1", dlqEvent.ID).Scan(&dlqCount))
+	assert.Equal(t, 1, dlqCount)
+
+	require.NoError(t, repo.SaveDLQ(ctx, &outbox.DLQEvent{
+		ID:              "manual-dlq",
+		OriginalEventID: "manual-event",
+		EventType:       "manual.failed",
+		Payload:         []byte(`{}`),
+		FailureReason:   "manual",
+	}))
 }
