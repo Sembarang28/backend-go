@@ -61,9 +61,17 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 	if payload == nil {
 		payload = []byte{}
 	}
-	headers, err := marshalHeaders(event.Headers)
+	headers := event.Headers
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	encodedHeaders, err := json.Marshal(headers)
 	if err != nil {
 		return fmt.Errorf("marshal outbox headers: %w", err)
+	}
+	var lastError any
+	if event.LastError != "" {
+		lastError = event.LastError
 	}
 
 	_, err = p.db.ExecContext(ctx, `
@@ -87,8 +95,8 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 			created_at = EXCLUDED.created_at,
 			updated_at = EXCLUDED.updated_at`,
 		event.ID, event.AggregateType, event.AggregateID, event.EventType,
-		payload, string(headers), event.Partition, status, event.RetryCount,
-		maxRetries, nextRetryAt, nullableString(event.LastError), createdAt, updatedAt,
+		payload, string(encodedHeaders), event.Partition, status, event.RetryCount,
+		maxRetries, nextRetryAt, lastError, createdAt, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("save outbox event %q: %w", event.ID, err)
@@ -172,7 +180,17 @@ func (p *PostgresRepository) MarkProcessing(ctx context.Context, ids []string) e
 }
 
 func (p *PostgresRepository) MarkPublished(ctx context.Context, id string) error {
-	return p.updateStatus(ctx, id, StatusPublished, "", nil)
+	if err := p.checkDB(); err != nil {
+		return err
+	}
+	_, err := p.db.ExecContext(ctx, `
+		UPDATE outbox_events
+		SET status = $1, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $2`, StatusPublished, id)
+	if err != nil {
+		return fmt.Errorf("mark outbox event %q published: %w", id, err)
+	}
+	return nil
 }
 
 func (p *PostgresRepository) MarkFailed(ctx context.Context, id string, errStr string, nextRetry time.Time) error {
@@ -233,7 +251,11 @@ func (p *PostgresRepository) SaveDLQ(ctx context.Context, dlq *DLQEvent) error {
 	if payload == nil {
 		payload = []byte{}
 	}
-	headers, err := marshalHeaders(dlq.Headers)
+	headers := dlq.Headers
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	encodedHeaders, err := json.Marshal(headers)
 	if err != nil {
 		return fmt.Errorf("marshal DLQ headers: %w", err)
 	}
@@ -255,7 +277,7 @@ func (p *PostgresRepository) SaveDLQ(ctx context.Context, dlq *DLQEvent) error {
 			failure_reason = EXCLUDED.failure_reason,
 			retry_attempts = EXCLUDED.retry_attempts,
 			failed_at = EXCLUDED.failed_at`,
-		dlq.ID, dlq.OriginalEventID, dlq.EventType, payload, string(headers),
+		dlq.ID, dlq.OriginalEventID, dlq.EventType, payload, string(encodedHeaders),
 		dlq.FailureReason, dlq.RetryAttempts, failedAt,
 	)
 	if err != nil {
@@ -296,48 +318,9 @@ func (p *PostgresRepository) DeletePublishedBefore(ctx context.Context, before t
 	return deleted, nil
 }
 
-func (p *PostgresRepository) updateStatus(ctx context.Context, id string, status EventStatus, lastError string, nextRetry *time.Time) error {
-	if err := p.checkDB(); err != nil {
-		return err
-	}
-	var err error
-	if nextRetry == nil {
-		_, err = p.db.ExecContext(ctx, `
-			UPDATE outbox_events
-			SET status = $1, updated_at = CURRENT_TIMESTAMP
-			WHERE id = $2`, status, id)
-	} else {
-		_, err = p.db.ExecContext(ctx, `
-			UPDATE outbox_events
-			SET status = $1, last_error = $2, next_retry_at = $3,
-				updated_at = CURRENT_TIMESTAMP
-			WHERE id = $4`, status, nullableString(lastError), *nextRetry, id)
-	}
-	if err != nil {
-		return fmt.Errorf("update outbox event %q status to %s: %w", id, status, err)
-	}
-	return nil
-}
-
 func (p *PostgresRepository) checkDB() error {
 	if p == nil || p.db == nil {
 		return errors.New("outbox PostgreSQL repository has no database executor")
 	}
 	return nil
 }
-
-func marshalHeaders(headers map[string]string) ([]byte, error) {
-	if headers == nil {
-		headers = map[string]string{}
-	}
-	return json.Marshal(headers)
-}
-
-func nullableString(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
-
-var _ Repository = (*PostgresRepository)(nil)
