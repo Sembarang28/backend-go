@@ -3,6 +3,11 @@ package idempotency
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -50,9 +55,36 @@ func HTTPMiddleware(storage Storage, inFlightTTL, completedTTL time.Duration) gi
 		}
 
 		ctx := c.Request.Context()
+		body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
+		if err != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				response.Error(c, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Idempotent request body exceeds 1 MiB")
+			} else {
+				slog.ErrorContext(ctx, "Failed to read idempotent request body", "error", err)
+				response.Error(c, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Request body could not be read")
+			}
+			c.Abort()
+			return
+		}
+		if storage == nil {
+			response.Error(c, http.StatusServiceUnavailable, "IDEMPOTENCY_UNAVAILABLE", "Idempotency storage is unavailable")
+			c.Abort()
+			return
+		}
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		fingerprintInput := c.Request.Method + "\n" + c.FullPath() + "\n" + string(body)
+		fingerprintBytes := sha256.Sum256([]byte(fingerprintInput))
+		fingerprint := hex.EncodeToString(fingerprintBytes[:])
 
 		// 1. Try to acquire lock
-		acquired, existing, err := storage.TryLock(ctx, idempotencyKey, inFlightTTL)
+		var acquired bool
+		var existing *Record
+		if fingerprintStorage, ok := storage.(FingerprintStorage); ok {
+			acquired, existing, err = fingerprintStorage.TryLockWithFingerprint(ctx, idempotencyKey, fingerprint, inFlightTTL)
+		} else {
+			acquired, existing, err = storage.TryLock(ctx, idempotencyKey, inFlightTTL)
+		}
 		if err != nil {
 			response.Error(c, http.StatusInternalServerError, "IDEMPOTENCY_ERROR", "Failed to verify idempotency state")
 			c.Abort()
@@ -61,6 +93,11 @@ func HTTPMiddleware(storage Storage, inFlightTTL, completedTTL time.Duration) gi
 
 		// 2. Handle duplicate request
 		if !acquired && existing != nil {
+			if existing.Fingerprint != "" && existing.Fingerprint != fingerprint {
+				response.Error(c, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "This idempotency key was already used with a different request")
+				c.Abort()
+				return
+			}
 			if existing.Status == StatusStarted {
 				response.Error(c, http.StatusConflict, "REQUEST_IN_PROGRESS", "A request with this idempotency key is currently processing")
 				c.Abort()
@@ -90,16 +127,21 @@ func HTTPMiddleware(storage Storage, inFlightTTL, completedTTL time.Duration) gi
 		if statusCode < 500 {
 			rec := &Record{
 				Key:          idempotencyKey,
+				Fingerprint:  fingerprint,
 				Status:       StatusCompleted,
 				StatusCode:   statusCode,
 				Headers:      map[string]string{"Content-Type": c.Writer.Header().Get("Content-Type")},
 				ResponseBody: w.body.Bytes(),
 				CreatedAt:    time.Now(),
 			}
-			_ = storage.SaveResponse(ctx, idempotencyKey, rec, completedTTL)
+			if err := storage.SaveResponse(ctx, idempotencyKey, rec, completedTTL); err != nil {
+				slog.ErrorContext(ctx, "Failed to save idempotent response", "error", err)
+			}
 		} else {
 			// On server error, release lock so client can retry
-			_ = storage.ReleaseLock(ctx, idempotencyKey)
+			if err := storage.ReleaseLock(ctx, idempotencyKey); err != nil {
+				slog.ErrorContext(ctx, "Failed to release idempotency lock after server error", "error", err)
+			}
 		}
 	}
 }

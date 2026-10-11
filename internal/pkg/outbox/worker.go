@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -113,18 +114,30 @@ func (w *Worker) runPartitionLoop(ctx context.Context, partition int) {
 
 func (w *Worker) processPartition(ctx context.Context, partition int, lockKey string) {
 	// 1. Acquire Distributed Lock for partition
+	if w.lock == nil {
+		slog.ErrorContext(ctx, "Outbox partition lock is unavailable", "partition", partition)
+		return
+	}
 	token, err := w.lock.Acquire(ctx, lockKey, w.cfg.LockTTL)
 	if err != nil {
-		// Lock held by another pod replica
+		if !errors.Is(err, ErrLockFailed) {
+			slog.ErrorContext(ctx, "Failed to acquire outbox partition lock", "partition", partition, "error", err)
+		}
 		return
 	}
 	defer func() {
-		_ = w.lock.Release(ctx, lockKey, token)
+		if err := w.lock.Release(ctx, lockKey, token); err != nil {
+			slog.ErrorContext(ctx, "Failed to release outbox partition lock", "partition", partition, "error", err)
+		}
 	}()
 
 	// 2. Fetch pending batch
 	events, err := w.repo.FetchPendingBatch(ctx, partition, w.cfg.BatchSize)
-	if err != nil || len(events) == 0 {
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to fetch pending outbox events", "partition", partition, "error", err)
+		return
+	}
+	if len(events) == 0 {
 		return
 	}
 
@@ -132,7 +145,10 @@ func (w *Worker) processPartition(ctx context.Context, partition int, lockKey st
 	for i, ev := range events {
 		ids[i] = ev.ID
 	}
-	_ = w.repo.MarkProcessing(ctx, ids)
+	if err := w.repo.MarkProcessing(ctx, ids); err != nil {
+		slog.ErrorContext(ctx, "Failed to mark outbox events processing", "partition", partition, "error", err)
+		return
+	}
 
 	// 3. Process events
 	for _, ev := range events {
@@ -149,9 +165,17 @@ func (w *Worker) processEvent(ctx context.Context, ev *OutboxEvent) {
 	}
 
 	// Publish to Message Broker
-	err := w.publisher.Publish(eventCtx, ev.EventType, ev.Payload, ev.Headers)
+	var err error
+	if w.publisher == nil {
+		err = errors.New("outbox message publisher is unavailable")
+	} else {
+		err = w.publisher.Publish(eventCtx, ev.EventType, ev.Payload, ev.Headers)
+	}
 	if err == nil {
-		_ = w.repo.MarkPublished(ctx, ev.ID)
+		if markErr := w.repo.MarkPublished(ctx, ev.ID); markErr != nil {
+			slog.ErrorContext(eventCtx, "Event published but failed to mark outbox event published", "event_id", ev.ID, "error", markErr)
+			return
+		}
 		slog.InfoContext(eventCtx, "Outbox event published", "event_id", ev.ID, "type", ev.EventType)
 		return
 	}
@@ -160,12 +184,17 @@ func (w *Worker) processEvent(ctx context.Context, ev *OutboxEvent) {
 	retryCount := ev.RetryCount + 1
 	if retryCount >= w.cfg.MaxRetries {
 		slog.ErrorContext(eventCtx, "Outbox event exceeded max retries, moving to DLQ", "event_id", ev.ID, "retries", retryCount, "error", err)
-		_ = w.repo.MoveToDLQ(ctx, ev.ID, fmt.Sprintf("Exceeded %d retries: %v", w.cfg.MaxRetries, err))
+		if dlqErr := w.repo.MoveToDLQ(ctx, ev.ID, fmt.Sprintf("Exceeded %d retries: %v", w.cfg.MaxRetries, err)); dlqErr != nil {
+			slog.ErrorContext(eventCtx, "Failed to move outbox event to DLQ", "event_id", ev.ID, "error", dlqErr)
+		}
 		return
 	}
 
 	backoff := w.cfg.BaseBackoff * time.Duration(1<<retryCount)
 	nextRetry := time.Now().Add(backoff)
-	_ = w.repo.MarkFailed(ctx, ev.ID, err.Error(), nextRetry)
+	if markErr := w.repo.MarkFailed(ctx, ev.ID, err.Error(), nextRetry); markErr != nil {
+		slog.ErrorContext(eventCtx, "Failed to schedule outbox event retry", "event_id", ev.ID, "error", markErr)
+		return
+	}
 	slog.WarnContext(eventCtx, "Outbox event failed, scheduled for retry", "event_id", ev.ID, "attempt", retryCount, "next_retry", nextRetry, "error", err)
 }

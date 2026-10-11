@@ -49,3 +49,23 @@ func TestSingleflightCacheProtection(t *testing.T) {
 	// Singleflight must ensure loader was invoked ONLY ONCE despite 50 concurrent requests
 	assert.Equal(t, int32(1), atomic.LoadInt32(&dbQueryCount), "Singleflight should suppress multiple DB queries for identical key")
 }
+
+func TestLoadWithoutCacheAlwaysCallsLoader(t *testing.T) {
+	ctx := context.Background()
+	var calls int
+	want := mockUser{ID: 11, Name: "Fresh"}
+
+	got, err := cache.LoadWithoutCache(ctx, func(context.Context) (mockUser, error) {
+		calls++
+		return want, nil
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, 1, calls)
+}
+
+func TestLoadWithoutCacheRejectsNilLoader(t *testing.T) {
+	_, err := cache.LoadWithoutCache[mockUser](context.Background(), nil)
+	assert.Error(t, err)
+}

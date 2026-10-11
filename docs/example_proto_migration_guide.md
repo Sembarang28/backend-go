@@ -1,4 +1,4 @@
-# Panduan Migrasi: Standalone Proto ke Centralized Proto Repository
+# Contoh Migrasi: Standalone Proto ke Centralized Proto Repository
 
 Dokumen ini menjelaskan strategi, arsitektur, dan langkah-langkah teknis untuk memindahkan definisi Protobuf dari *standalone repository* ke *centralized repository* terpusat untuk arsitektur microservices enterprise.
 
@@ -66,15 +66,15 @@ plugins:
       - require_unimplemented_servers=false
 ```
 
-### C. Contoh `user/v1/user.proto`
+### C. Contoh `example_user/v1/example_user.proto`
 ```protobuf
 syntax = "proto3";
 
-package user.v1;
+package example_user.v1;
 
-option go_package = "github.com/your-org/proto-go/user/v1;userv1";
+option go_package = "github.com/your-org/proto-go/example_user/v1;exampleuserv1";
 
-service UserService {
+service ExampleUserService {
   rpc GetUser (GetUserRequest) returns (GetUserResponse);
 }
 
@@ -161,7 +161,7 @@ go env -w GOPRIVATE=github.com/your-org/*
 
 ### Langkah 2: Unduh Go SDK dari Centralized Repo
 ```bash
-go get github.com/your-org/proto-go/user/v1@v1.0.0
+go get github.com/your-org/proto-go/example_user/v1@v1.0.0
 ```
 
 ### Langkah 3: Hapus Folder Proto Lokal
@@ -170,7 +170,7 @@ rm -rf proto/
 ```
 
 ### Langkah 4: Sesuaikan Import di Handler gRPC Server
-Update `internal/handler/grpc/user_grpc_handler.go`:
+Update `internal/handler/grpc/example_user_grpc_handler.go`:
 
 ```go
 package grpc
@@ -182,34 +182,34 @@ import (
 	"backend-go/internal/domain"
 
 	// Menggunakan centralized generated proto
-	userv1 "github.com/your-org/proto-go/user/v1"
+	exampleuserv1 "github.com/your-org/proto-go/example_user/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-type UserGRPCHandler struct {
-	userv1.UnimplementedUserServiceServer
-	usecase domain.UserUsecase
+type ExampleUserGRPCHandler struct {
+	exampleuserv1.UnimplementedExampleUserServiceServer
+	usecase domain.ExampleUserUsecase
 }
 
-func NewUserGRPCHandler(u domain.UserUsecase) *UserGRPCHandler {
-	return &UserGRPCHandler{usecase: u}
+func NewExampleUserGRPCHandler(u domain.ExampleUserUsecase) *ExampleUserGRPCHandler {
+	return &ExampleUserGRPCHandler{usecase: u}
 }
 
-func (h *UserGRPCHandler) GetUser(ctx context.Context, req *userv1.GetUserRequest) (*userv1.GetUserResponse, error) {
+func (h *ExampleUserGRPCHandler) GetUser(ctx context.Context, req *exampleuserv1.GetUserRequest) (*exampleuserv1.GetUserResponse, error) {
 	if req.GetId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id must be greater than 0")
 	}
 
 	user, err := h.usecase.GetUser(ctx, int(req.GetId()))
 	if err != nil {
-		if errors.Is(err, domain.ErrUserNotFound) {
+		if errors.Is(err, domain.ErrExampleUserNotFound) {
 			return nil, status.Error(codes.NotFound, err.Error())
 		}
 		return nil, status.Error(codes.Internal, "internal server error")
 	}
 
-	return &userv1.GetUserResponse{
+	return &exampleuserv1.GetUserResponse{
 		Id:    int32(user.ID),
 		Name:  user.Name,
 		Email: user.Email,
@@ -220,12 +220,12 @@ func (h *UserGRPCHandler) GetUser(ctx context.Context, req *userv1.GetUserReques
 ### Langkah 5: Registrasi ke Server gRPC di `cmd/api/main.go`
 ```go
 import (
-	userv1 "github.com/your-org/proto-go/user/v1"
+	exampleuserv1 "github.com/your-org/proto-go/example_user/v1"
 )
 
 // Registrasi handler ke gRPC Server
-userGRPCHandler := handlergrpc.NewUserGRPCHandler(userUsecase)
-userv1.RegisterUserServiceServer(grpcSrv, userGRPCHandler)
+userGRPCHandler := handlergrpc.NewExampleUserGRPCHandler(userUsecase)
+exampleuserv1.RegisterExampleUserServiceServer(grpcSrv, userGRPCHandler)
 ```
 
 ---
@@ -233,8 +233,8 @@ userv1.RegisterUserServiceServer(grpcSrv, userGRPCHandler)
 ## 6. Aturan dan Best Practices Kontrak Proto
 
 1. **Paket Versioning Semantik**:
-   - Selalu sertakan versi pada nama package proto: `package user.v1;`
-   - Jika terdapat *breaking change* yang fundamental, buat folder baru `user/v2/`.
+   - Selalu sertakan versi pada nama package proto: `package example_user.v1;`
+   - Jika terdapat *breaking change* yang fundamental, buat folder baru `example_user/v2/`.
 2. **Tag Reservation**:
    - Jangan pernah mengubah nomor tag field (`id = 1;`).
    - Jika field dihapus, tandai dengan `reserved`:

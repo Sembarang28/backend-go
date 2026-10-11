@@ -25,7 +25,7 @@ spec:
         - name: migrator
           image: ghcr.io/giriaditya/backend-go:latest
           imagePullPolicy: IfNotPresent
-          command: ["/app/api", "--migrate-only"]
+          command: ["/app/migrate"]
           envFrom:
             - configMapRef:
                 name: backend-go-config

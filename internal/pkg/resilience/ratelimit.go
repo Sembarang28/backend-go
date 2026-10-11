@@ -2,7 +2,10 @@ package resilience
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -21,20 +24,27 @@ type RateLimiter interface {
 
 // RedisSlidingWindowLimiter implements precise sliding-window rate limiting via Redis sorted sets.
 type RedisSlidingWindowLimiter struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 // NewRedisSlidingWindowLimiter initializes RedisSlidingWindowLimiter.
-func NewRedisSlidingWindowLimiter(client *redis.Client) *RedisSlidingWindowLimiter {
+func NewRedisSlidingWindowLimiter(client redis.UniversalClient) *RedisSlidingWindowLimiter {
 	return &RedisSlidingWindowLimiter{client: client}
 }
 
 // Allow checks if key has capacity within sliding window.
 func (r *RedisSlidingWindowLimiter) Allow(ctx context.Context, key string, limit int64, window time.Duration) (bool, int64, time.Duration, error) {
+	if limit <= 0 || window <= 0 {
+		return false, 0, 0, fmt.Errorf("rate limit and window must be positive")
+	}
 	if r.client == nil {
 		return true, limit, 0, nil
 	}
 
+	randomID := make([]byte, 8)
+	if _, err := rand.Read(randomID); err != nil {
+		return false, 0, 0, fmt.Errorf("generate rate-limit request ID: %w", err)
+	}
 	now := time.Now()
 	nowMicro := now.UnixMicro()
 	windowMicro := window.Microseconds()
@@ -57,7 +67,7 @@ func (r *RedisSlidingWindowLimiter) Allow(ctx context.Context, key string, limit
 
 		-- 3. Check limit
 		if currentCount < limit then
-			redis.call('ZADD', key, now, now)
+			redis.call('ZADD', key, now, ARGV[5])
 			redis.call('EXPIRE', key, windowSec)
 			return {1, limit - (currentCount + 1)}
 		else
@@ -65,20 +75,29 @@ func (r *RedisSlidingWindowLimiter) Allow(ctx context.Context, key string, limit
 		end
 	`
 
-	res, err := r.client.Eval(ctx, luaScript, []string{rKey}, nowMicro, clearBefore, limit, int(window.Seconds())+1).Result()
+	member := strconv.FormatInt(now.UnixMicro(), 10) + ":" + hex.EncodeToString(randomID)
+	res, err := r.client.Eval(ctx, luaScript, []string{rKey}, nowMicro, clearBefore, limit, int(window.Seconds())+1, member).Result()
 	if err != nil {
 		return true, limit, 0, err
 	}
 
 	vals, ok := res.([]interface{})
-	if !ok || len(vals) < 2 {
-		return true, limit, 0, nil
+	if !ok || len(vals) != 2 {
+		return false, 0, 0, fmt.Errorf("unexpected Redis rate-limit response %T", res)
+	}
+	allowedValue, ok := vals[0].(int64)
+	if !ok {
+		return false, 0, 0, fmt.Errorf("unexpected Redis rate-limit decision type %T", vals[0])
+	}
+	remaining, ok := vals[1].(int64)
+	if !ok {
+		return false, 0, 0, fmt.Errorf("unexpected Redis rate-limit remaining type %T", vals[1])
+	}
+	if allowedValue != 0 && allowedValue != 1 {
+		return false, 0, 0, fmt.Errorf("unexpected Redis rate-limit decision value %d", allowedValue)
 	}
 
-	allowed := vals[0].(int64) == 1
-	remaining := vals[1].(int64)
-
-	return allowed, remaining, window, nil
+	return allowedValue == 1, remaining, window, nil
 }
 
 // MemoryRateLimiter provides local sliding window limiter for tests/stand-alone mode.
@@ -137,10 +156,16 @@ func TenantOrIPKey(c *gin.Context) string {
 // HTTPRateLimitMiddleware creates a Gin middleware for rate limiting.
 func HTTPRateLimitMiddleware(limiter RateLimiter, keyFunc KeyExtractorFunc, limit int64, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if limiter == nil {
+			slog.ErrorContext(c.Request.Context(), "Rate limiter is unavailable; allowing request per fail-open policy")
+			c.Next()
+			return
+		}
 		key := keyFunc(c)
 		allowed, remaining, _, err := limiter.Allow(c.Request.Context(), key, limit, window)
 		if err != nil {
 			// Fail open on rate limiter storage errors
+			slog.ErrorContext(c.Request.Context(), "Rate limiter failed; allowing request per fail-open policy", "key", key, "error", err)
 			c.Next()
 			return
 		}

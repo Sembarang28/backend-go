@@ -2,6 +2,7 @@ package reconciliation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -129,10 +130,15 @@ func (e *Engine) executeJob(ctx context.Context, job Job) {
 	if e.lock != nil {
 		token, err := e.lock.Acquire(ctx, lockKey, e.cfg.LockTTL)
 		if err != nil {
+			if !errors.Is(err, outbox.ErrLockFailed) {
+				slog.ErrorContext(ctx, "Failed to acquire reconciliation lock", "job", job.Name(), "error", err)
+			}
 			return
 		}
 		defer func() {
-			_ = e.lock.Release(ctx, lockKey, token)
+			if err := e.lock.Release(ctx, lockKey, token); err != nil {
+				slog.ErrorContext(ctx, "Failed to release reconciliation lock", "job", job.Name(), "error", err)
+			}
 		}()
 	}
 

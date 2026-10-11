@@ -1,3 +1,5 @@
+//go:build examples
+
 package repository
 
 import (
@@ -16,8 +18,8 @@ type userRepository struct {
 	cacheTTL time.Duration
 }
 
-// NewUserRepository creates a new instance of domain.UserRepository with Singleflight Cache protection.
-func NewUserRepository(redisClient *redis.Client, cacheTTL time.Duration) domain.UserRepository {
+// NewExampleUserRepository creates a new instance of domain.ExampleUserRepository with Singleflight Cache protection.
+func NewExampleUserRepository(redisClient redis.UniversalClient, cacheTTL time.Duration) domain.ExampleUserRepository {
 	if cacheTTL == 0 {
 		cacheTTL = 5 * time.Minute
 	}
@@ -28,15 +30,15 @@ func NewUserRepository(redisClient *redis.Client, cacheTTL time.Duration) domain
 }
 
 // GetByID returns a User by ID protected against cache stampedes.
-func (r *userRepository) GetByID(ctx context.Context, id int) (*domain.User, error) {
+func (r *userRepository) GetByID(ctx context.Context, id int) (*domain.ExampleUser, error) {
 	cacheKey := fmt.Sprintf("user:%d", id)
 
-	return cache.GetOrSet(ctx, r.cacheMgr, cacheKey, r.cacheTTL, func(fetchCtx context.Context) (*domain.User, error) {
+	return cache.GetOrSet(ctx, r.cacheMgr, cacheKey, r.cacheTTL, func(fetchCtx context.Context) (*domain.ExampleUser, error) {
 		return r.fetchFromDatabase(fetchCtx, id)
 	})
 }
 
-func (r *userRepository) fetchFromDatabase(ctx context.Context, id int) (*domain.User, error) {
+func (r *userRepository) fetchFromDatabase(ctx context.Context, id int) (*domain.ExampleUser, error) {
 	// Check for context cancellation before executing DB operation
 	select {
 	case <-ctx.Done():
@@ -46,12 +48,12 @@ func (r *userRepository) fetchFromDatabase(ctx context.Context, id int) (*domain
 
 	// Simulated DB logic
 	if id == 1 {
-		return &domain.User{
+		return &domain.ExampleUser{
 			ID:    1,
 			Name:  "Developer",
 			Email: "dev@example.com",
 		}, nil
 	}
 
-	return nil, domain.ErrUserNotFound
+	return nil, domain.ErrExampleUserNotFound
 }

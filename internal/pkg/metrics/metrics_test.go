@@ -1,6 +1,7 @@
 package metrics_test
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -34,4 +35,16 @@ func TestMetricsCollection(t *testing.T) {
 	mfs, err := reg.Gather()
 	assert.NoError(t, err)
 	assert.NotEmpty(t, mfs)
+
+	m.RecordDBStats("primary", sql.DBStats{WaitCount: 4})
+	m.RecordDBStats("primary", sql.DBStats{WaitCount: 6})
+	mfs, err = reg.Gather()
+	assert.NoError(t, err)
+	for _, family := range mfs {
+		if family.GetName() == "db_wait_count_total" {
+			assert.Equal(t, float64(6), family.GetMetric()[0].GetCounter().GetValue())
+			return
+		}
+	}
+	assert.Fail(t, "db_wait_count_total metric was not registered")
 }

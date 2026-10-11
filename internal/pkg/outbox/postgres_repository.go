@@ -79,7 +79,7 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 			id, aggregate_type, aggregate_id, event_type, payload, headers,
 			partition, status, retry_count, max_retries, next_retry_at,
 			last_error, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (id) DO UPDATE SET
 			aggregate_type = EXCLUDED.aggregate_type,
 			aggregate_id = EXCLUDED.aggregate_id,

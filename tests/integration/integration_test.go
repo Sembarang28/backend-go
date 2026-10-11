@@ -1,5 +1,5 @@
-//go:build integration
-// +build integration
+//go:build integration && !examples
+// +build integration,!examples
 
 package integration_test
 
@@ -9,15 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"backend-go/internal/domain"
 	"backend-go/internal/pkg/audit"
 	"backend-go/internal/pkg/cache"
 	"backend-go/internal/pkg/database"
 	"backend-go/internal/pkg/database/migration"
 	"backend-go/internal/pkg/outbox"
 	"backend-go/internal/pkg/telemetry"
-	"backend-go/internal/repository"
-	"backend-go/internal/usecase"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"
@@ -27,13 +24,10 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
-type mockIntegrationPublisher struct {
-	publishedEvents []domain.UserAccessedEvent
-}
-
-func (m *mockIntegrationPublisher) PublishUserAccessed(ctx context.Context, event domain.UserAccessedEvent) error {
-	m.publishedEvents = append(m.publishedEvents, event)
-	return nil
+type integrationUser struct {
+	ID    int
+	Name  string
+	Email string
 }
 
 func TestEndToEndWithTestcontainers(t *testing.T) {
@@ -64,6 +58,13 @@ func TestEndToEndWithTestcontainers(t *testing.T) {
 	migrator := migration.NewEngine()
 	err = migrator.Run(ctx, db)
 	require.NoError(t, err)
+	var exampleTableExists bool
+	require.NoError(t, db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.tables
+			WHERE table_schema = current_schema() AND table_name = 'example_orders'
+		)`).Scan(&exampleTableExists))
+	assert.False(t, exampleTableExists, "default migrations must omit optional example schemas")
 
 	// 3. Start Redis Container
 	redisContainer, err := tcredis.Run(ctx,
@@ -83,22 +84,13 @@ func TestEndToEndWithTestcontainers(t *testing.T) {
 
 	// 4. Test Singleflight Cache with Real Redis
 	cacheMgr := cache.NewManager(redisClient)
-	cachedUser, err := cache.GetOrSet(ctx, cacheMgr, "user:1", 1*time.Minute, func(c context.Context) (*domain.User, error) {
-		return &domain.User{ID: 1, Name: "Integration User", Email: "integration@example.com"}, nil
+	cachedUser, err := cache.GetOrSet(ctx, cacheMgr, "example:user:1", 1*time.Minute, func(c context.Context) (*integrationUser, error) {
+		return &integrationUser{ID: 1, Name: "Integration User", Email: "integration@example.com"}, nil
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "Integration User", cachedUser.Name)
 
-	// 5. Test Usecase with Real Redis-backed Repository
-	userRepo := repository.NewUserRepository(redisClient, 5*time.Minute)
-	pub := &mockIntegrationPublisher{}
-	uc := usecase.NewUserUsecase(userRepo, pub)
-
-	user, err := uc.GetUser(ctx, 1)
-	require.NoError(t, err)
-	assert.Equal(t, 1, user.ID)
-
-	// 6. Test Outbox Worker with Real Redis Distributed Lock
+	// 5. Test Outbox Worker with Real Redis Distributed Lock
 	outboxLock := outbox.NewRedisDistributedLock(redisClient)
 
 	// Acquire and release distributed lock
@@ -191,6 +183,33 @@ func TestPostgresOutboxRepository(t *testing.T) {
 		Payload:         []byte(`{}`),
 		FailureReason:   "manual",
 	}))
+}
+
+func TestPostgresPrimaryReplicaGroup(t *testing.T) {
+	ctx := context.Background()
+	pgContainer, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("routing_test"),
+		tcpostgres.WithUsername("testuser"),
+		tcpostgres.WithPassword("testpass"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
+
+	dsn, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+	group, err := database.OpenPostgresGroup(ctx, dsn, []string{dsn, dsn}, database.DefaultPoolConfig())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = group.Close() })
+
+	assert.Same(t, group.Primary, group.Write())
+	assert.Same(t, group.Replicas[1], group.Read())
+	assert.Same(t, group.Replicas[0], group.Read())
+	require.NoError(t, group.Write().PingContext(ctx))
+	for _, replica := range group.Replicas {
+		require.NoError(t, replica.PingContext(ctx))
+	}
 }
 
 func TestPostgresAuditor(t *testing.T) {

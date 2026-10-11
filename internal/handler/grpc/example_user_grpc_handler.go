@@ -1,3 +1,5 @@
+//go:build examples
+
 package grpc
 
 import (
@@ -22,18 +24,18 @@ type GetUserResponse struct {
 	Email string `json:"email"`
 }
 
-// UserGRPCHandler exposes domain.UserUsecase over gRPC.
-type UserGRPCHandler struct {
-	usecase domain.UserUsecase
+// ExampleUserGRPCHandler exposes the sample user use case over gRPC.
+type ExampleUserGRPCHandler struct {
+	usecase domain.ExampleUserUsecase
 }
 
-// NewUserGRPCHandler initializes gRPC adapter for UserService.
-func NewUserGRPCHandler(u domain.UserUsecase) *UserGRPCHandler {
-	return &UserGRPCHandler{usecase: u}
+// NewExampleUserGRPCHandler initializes the sample gRPC adapter for UserService.
+func NewExampleUserGRPCHandler(u domain.ExampleUserUsecase) *ExampleUserGRPCHandler {
+	return &ExampleUserGRPCHandler{usecase: u}
 }
 
 // GetUser handles gRPC RPC call to fetch user by ID.
-func (h *UserGRPCHandler) GetUser(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+func (h *ExampleUserGRPCHandler) GetUser(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
 	if req == nil || req.ID <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id must be greater than 0")
 	}
@@ -41,9 +43,9 @@ func (h *UserGRPCHandler) GetUser(ctx context.Context, req *GetUserRequest) (*Ge
 	user, err := h.usecase.GetUser(ctx, int(req.ID))
 	if err != nil {
 		switch {
-		case errors.Is(err, domain.ErrInvalidUserID):
+		case errors.Is(err, domain.ErrInvalidExampleUserID):
 			return nil, status.Error(codes.InvalidArgument, err.Error())
-		case errors.Is(err, domain.ErrUserNotFound):
+		case errors.Is(err, domain.ErrExampleUserNotFound):
 			return nil, status.Error(codes.NotFound, err.Error())
 		default:
 			return nil, status.Error(codes.Internal, "internal server error")

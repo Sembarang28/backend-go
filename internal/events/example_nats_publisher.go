@@ -1,3 +1,5 @@
+//go:build examples
+
 package events
 
 import (
@@ -15,13 +17,13 @@ type natsEventPublisher struct {
 	conn *nats.Conn
 }
 
-// NewNATSEventPublisher returns a new domain.EventPublisher backed by NATS.
-func NewNATSEventPublisher(conn *nats.Conn) domain.EventPublisher {
+// NewExampleNATSEventPublisher returns a new domain.ExampleEventPublisher backed by NATS.
+func NewExampleNATSEventPublisher(conn *nats.Conn) domain.ExampleEventPublisher {
 	return &natsEventPublisher{conn: conn}
 }
 
 // PublishUserAccessed publishes a UserAccessedEvent to NATS subject 'user.accessed'.
-func (p *natsEventPublisher) PublishUserAccessed(ctx context.Context, event domain.UserAccessedEvent) error {
+func (p *natsEventPublisher) PublishUserAccessed(ctx context.Context, event domain.ExampleUserAccessedEvent) error {
 	if p.conn == nil {
 		slog.Debug("NATS connection is nil, skipping event publish", "event", event)
 		return nil

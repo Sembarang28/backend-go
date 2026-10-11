@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package user.v1;
+package example_user.v1;
 
-option go_package = "backend-go/proto/user/v1;userv1";
+option go_package = "backend-go/proto/example_user/v1;exampleuserv1";
 
-service UserService {
+service ExampleUserService {
   rpc GetUser (GetUserRequest) returns (GetUserResponse);
 }
 

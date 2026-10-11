@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -30,10 +31,13 @@ type Metrics struct {
 	OutboxDLQEventsTotal    *prometheus.CounterVec
 
 	// DB Pool metrics
-	DBOpenConnections *prometheus.GaugeVec
-	DBIdleConnections *prometheus.GaugeVec
+	DBOpenConnections  *prometheus.GaugeVec
+	DBIdleConnections  *prometheus.GaugeVec
 	DBInUseConnections *prometheus.GaugeVec
-	DBWaitCountTotal  *prometheus.CounterVec
+	DBWaitCountTotal   *prometheus.CounterVec
+
+	dbWaitMu     sync.Mutex
+	dbWaitCounts map[string]int64
 }
 
 var globalMetrics *Metrics
@@ -132,6 +136,7 @@ func InitMetrics(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"role"},
 		),
+		dbWaitCounts: make(map[string]int64),
 	}
 
 	reg.MustRegister(
@@ -166,7 +171,14 @@ func (m *Metrics) RecordDBStats(role string, stats sql.DBStats) {
 	m.DBOpenConnections.WithLabelValues(role).Set(float64(stats.OpenConnections))
 	m.DBIdleConnections.WithLabelValues(role).Set(float64(stats.Idle))
 	m.DBInUseConnections.WithLabelValues(role).Set(float64(stats.InUse))
-	m.DBWaitCountTotal.WithLabelValues(role).Add(float64(stats.WaitCount))
+	m.dbWaitMu.Lock()
+	defer m.dbWaitMu.Unlock()
+	delta := stats.WaitCount - m.dbWaitCounts[role]
+	if delta < 0 {
+		delta = stats.WaitCount
+	}
+	m.DBWaitCountTotal.WithLabelValues(role).Add(float64(delta))
+	m.dbWaitCounts[role] = stats.WaitCount
 }
 
 // HTTPMiddleware captures HTTP RED metrics.

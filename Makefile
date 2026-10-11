@@ -1,4 +1,4 @@
-.PHONY: run run-dev run-prod dev prod test test-integration test-cover mock lint build clean proto pprof-heap pprof-profile docker-build docker-up docker-down new
+.PHONY: run run-dev run-prod run-examples dev prod test test-integration test-example-integration test-examples test-cover mock lint build clean remove-examples proto pprof-heap pprof-profile docker-build docker-up docker-down new
 
 # -----------------------------------------------------------------------------
 # Running Applications
@@ -6,10 +6,13 @@
 run: run-dev
 
 run-dev dev:
-	APP_ENV=development go run cmd/api/main.go cmd/api/pprof.go
+	APP_ENV=development go run ./cmd/api
 
 run-prod prod:
-	APP_ENV=production go run cmd/api/main.go cmd/api/pprof.go
+	APP_ENV=production go run ./cmd/api
+
+run-examples:
+	APP_ENV=development go run -tags=examples ./cmd/api
 
 # -----------------------------------------------------------------------------
 # Testing & Code Quality
@@ -19,6 +22,12 @@ test:
 
 test-integration:
 	go test -v -tags=integration ./tests/integration/...
+
+test-example-integration:
+	go test -v -tags=integration,examples ./tests/integration/...
+
+test-examples:
+	go test -tags=examples ./...
 
 test-cover:
 	go test -coverprofile=coverage.out ./...
@@ -45,10 +54,14 @@ pprof-profile:
 # Build & Docker
 # -----------------------------------------------------------------------------
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-w -s" -o bin/api cmd/api/main.go cmd/api/pprof.go
+	CGO_ENABLED=0 go build -trimpath -ldflags="-w -s" -o bin/api ./cmd/api
+	CGO_ENABLED=0 go build -trimpath -ldflags="-w -s" -o bin/migrate ./cmd/migrate
 
 clean:
 	rm -rf bin/ coverage.out coverage.html
+
+remove-examples:
+	@find cmd/api internal/domain internal/usecase internal/handler internal/repository internal/events tests/integration docs internal/pkg/database/migration proto -type f \( -name 'example_*.go' -o -name 'example_*.md' -o -name 'example_*.proto' -o -name '*_example_*.sql' \) -print -delete
 
 docker-build:
 	docker build -f deployments/docker/Dockerfile -t backend-go:latest .
@@ -85,6 +98,3 @@ new:
 	@echo "Running go mod tidy and tests in new project..."
 	@cd "$(path)" && go mod tidy && go test ./...
 	@echo "New project successfully created at $(path)!"
-
-
-

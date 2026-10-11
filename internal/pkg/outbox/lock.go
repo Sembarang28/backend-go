@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	ErrLockFailed = errors.New("failed to acquire distributed lock")
+	ErrLockFailed  = errors.New("failed to acquire distributed lock")
 	ErrLockNotHeld = errors.New("lock not held or token mismatch")
 )
 
@@ -24,11 +24,11 @@ type DistributedLock interface {
 
 // RedisDistributedLock implements Redlock/SETNX pattern on Redis.
 type RedisDistributedLock struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 // NewRedisDistributedLock creates a new RedisDistributedLock instance.
-func NewRedisDistributedLock(client *redis.Client) *RedisDistributedLock {
+func NewRedisDistributedLock(client redis.UniversalClient) *RedisDistributedLock {
 	return &RedisDistributedLock{client: client}
 }
 

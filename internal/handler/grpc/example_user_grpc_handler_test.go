@@ -1,3 +1,5 @@
+//go:build examples
+
 package grpc_test
 
 import (
@@ -17,20 +19,20 @@ type mockUserUsecase struct {
 	mock.Mock
 }
 
-func (m *mockUserUsecase) GetUser(ctx context.Context, id int) (*domain.User, error) {
+func (m *mockUserUsecase) GetUser(ctx context.Context, id int) (*domain.ExampleUser, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*domain.User), args.Error(1)
+	return args.Get(0).(*domain.ExampleUser), args.Error(1)
 }
 
-func TestUserGRPCHandler_GetUser(t *testing.T) {
+func TestExampleUserGRPCHandler_GetUser(t *testing.T) {
 	mockUC := new(mockUserUsecase)
-	h := handlergrpc.NewUserGRPCHandler(mockUC)
+	h := handlergrpc.NewExampleUserGRPCHandler(mockUC)
 
 	// Success case
-	mockUC.On("GetUser", mock.Anything, 1).Return(&domain.User{
+	mockUC.On("GetUser", mock.Anything, 1).Return(&domain.ExampleUser{
 		ID:    1,
 		Name:  "Aditya",
 		Email: "aditya@example.com",
@@ -42,7 +44,7 @@ func TestUserGRPCHandler_GetUser(t *testing.T) {
 	assert.Equal(t, "Aditya", res.Name)
 
 	// Not found case
-	mockUC.On("GetUser", mock.Anything, 99).Return(nil, domain.ErrUserNotFound)
+	mockUC.On("GetUser", mock.Anything, 99).Return(nil, domain.ErrExampleUserNotFound)
 	_, err = h.GetUser(context.Background(), &handlergrpc.GetUserRequest{ID: 99})
 	assert.Error(t, err)
 	st, ok := status.FromError(err)

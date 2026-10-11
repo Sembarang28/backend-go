@@ -14,15 +14,17 @@ backend-go/
 │   ├── docker/                     # Multi-stage hardened Dockerfile
 │   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
 ├── docs/
+│   ├── infra_operations_guide.md          # Panduan deployment Kubernetes, observability, dan runbook
+│   ├── postgres_replication_guide.md      # Panduan PostgreSQL critical reads dan replication lag
+│   ├── redis_replication_guide.md         # Panduan Redis routing, critical reads, dan replication lag
 │   ├── audit_guide.md                       # Pilihan audit log-only atau persistence PostgreSQL
 │   ├── outbox_guide.md                      # PostgreSQL persistence, transactions, worker setup, and adapter extensibility
 │   ├── reconciliation_guide.md              # Implementing and operating reconciliation jobs
 │   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
 │   ├── project.md                  # Comprehensive architecture documentation
-│   └── proto_migration_guide.md    # Centralized Protobuf migration guide
 ├── internal/
 │   ├── config/                     # Configuration loader (.env & system environment)
-│   ├── domain/                     # Domain entities, error types, repository/usecase interfaces
+│   ├── domain/                     # Shared domain errors; sample domains are optional
 │   ├── events/                     # Message broker publishers (NATS / Kafka)
 │   ├── handler/
 │   │   ├── http/                   # REST API Delivery Layer (Gin controllers & routes)
@@ -42,9 +44,9 @@ backend-go/
 │   │   ├── shutdown/               # Phased Graceful Shutdown Engine
 │   │   └── telemetry/              # W3C TraceContext propagator & slog TraceHandler
 │   ├── repository/                 # Data Access Layer with caching & DB persistence
-│   └── usecase/                    # Business Logic Layer
+│   └── usecase/                    # Shared use-case infrastructure and optional examples
 ├── proto/
-│   └── user/v1/user.proto          # Protobuf service definitions
+│   └── example_user/v1/example_user.proto # Optional sample Protobuf service
 ├── tests/
 │   └── integration/                # End-to-End Testcontainers tests (PostgreSQL + Redis)
 ├── Makefile
@@ -77,7 +79,9 @@ backend-go/
 - **gRPC Resiliency Interceptors (`grpc.go`)**: Native `UnaryServerRateLimitInterceptor` and `UnaryClientCircuitBreakerInterceptor`.
 
 ### 5. Database Optimization & Multi-Tenancy (`internal/pkg/database`)
-- **Read/Write Splitting (`DBGroup`)**: Automatically routes mutation queries (`Write()`) to Primary DB and query operations (`Read()`) across read-replica pools using round-robin distribution.
+- **Read/Write Splitting (`DBGroup`)**: Menyediakan `Write()` untuk mutasi, `ReadPrimary()` untuk critical reads, dan `Read()` untuk query toleran-stale yang dibagi round-robin ke read replicas.
+- **Critical Read Guidance**: Gunakan PostgreSQL primary untuk read-after-write dan keputusan critical; lewati cache Redis untuk data authoritative. Lihat [Panduan PostgreSQL Replication Lag](docs/postgres_replication_guide.md) dan [Panduan Redis Replication Lag](docs/redis_replication_guide.md) untuk panduan spesifik masing-masing datastore.
+- **Optional examples**: sample user/order handlers, workflows, migrations, and guides are excluded from the default build. Run with `make run-examples`, test with `make test-examples`, or remove all files named as examples in one step with `make remove-examples`.
 - **Dynamic Tenant Router (`DynamicTenantRouter`)**: Resolves tenant-specific database connection pools dynamically based on `TenantID` in context.
 - **Embedded Migration Engine (`internal/pkg/database/migration`)**: Programmatic DDL execution using `go:embed` SQL files with transaction safety and version tracking (`schema_migrations`).
 
@@ -118,9 +122,9 @@ Ready-to-use production assets located under `deployments/`:
 ## Handler Layer Organization
 
 - **HTTP Handlers (`internal/handler/http`)**:
-  - Contains Gin REST controllers and route registration (e.g. `RegisterUserRoutes`).
+  - Contains HTTP delivery middleware; sample routes are opt-in with the `examples` build tag.
 - **gRPC Handlers (`internal/handler/grpc`)**:
-  - Contains gRPC server implementations exposing usecases over Protobuf/gRPC (e.g. `UserGRPCHandler`).
+  - Contains gRPC server infrastructure; sample handlers are opt-in with the `examples` build tag.
 
 ---
 
@@ -166,16 +170,24 @@ Configuration values are dynamically loaded from environment-specific files base
 
 ### 1. Run the Server Locally (Development / Debug Mode)
 ```bash
-APP_ENV=development go run cmd/api/main.go
+APP_ENV=development go run ./cmd/api
 ```
 The server will run on `http://127.0.0.1:8080` with pprof at `http://127.0.0.1:6060/debug/pprof/`.
 
 ### 2. Run the Server in Production Mode
 ```bash
-APP_ENV=production go run cmd/api/main.go
+APP_ENV=production go run ./cmd/api
 ```
 
-### 3. Run Unit & Integration Tests
+### 3. Run the Optional Examples
+```bash
+make run-examples
+```
+The examples use the Go `examples` build tag and are not part of the default
+application build. Use `make remove-examples` to delete their source, tests,
+migrations, and example-only guides from a fork.
+
+### 4. Run Unit & Integration Tests
 ```bash
 # Run unit tests
 go test -v -cover ./...
@@ -184,10 +196,13 @@ go test -v -cover ./...
 make test-integration
 ```
 
-### 4. Build the Binary
+### 5. Build the Binary
 ```bash
-go build -o bin/api cmd/api/main.go
+go build -o bin/api ./cmd/api
 ./bin/api
+
+# Build the schema migrator used by deployments/k8s/job-migration.yaml
+go build -o bin/migrate ./cmd/migrate
 ```
 
 ---

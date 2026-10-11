@@ -33,6 +33,18 @@ func TestRateLimiter(t *testing.T) {
 	assert.False(t, allowed)
 }
 
+func TestRedisRateLimiterRejectsInvalidPolicy(t *testing.T) {
+	limiter := resilience.NewRedisSlidingWindowLimiter(nil)
+
+	allowed, _, _, err := limiter.Allow(context.Background(), "user-1", 0, time.Minute)
+	assert.Error(t, err)
+	assert.False(t, allowed)
+
+	allowed, _, _, err = limiter.Allow(context.Background(), "user-1", 1, 0)
+	assert.Error(t, err)
+	assert.False(t, allowed)
+}
+
 func TestCircuitBreaker(t *testing.T) {
 	cfg := resilience.CircuitBreakerConfig{
 		Name:                "test-service",

@@ -13,15 +13,25 @@ import (
 
 // Manager provides cache operations with Singleflight Stampede Protection.
 type Manager struct {
-	client *redis.Client
+	client redis.UniversalClient
 	sf     singleflight.Group
 }
 
 // NewManager initializes cache manager.
-func NewManager(client *redis.Client) *Manager {
+func NewManager(client redis.UniversalClient) *Manager {
 	return &Manager{
 		client: client,
 	}
+}
+
+// LoadWithoutCache invokes loader directly without reading from or writing to
+// Redis. Use this for data that must come from its authoritative source.
+func LoadWithoutCache[T any](ctx context.Context, loader func(context.Context) (T, error)) (T, error) {
+	var zero T
+	if loader == nil {
+		return zero, fmt.Errorf("cache loader is required")
+	}
+	return loader(ctx)
 }
 
 // GetOrSet retrieves an item from Redis or invokes loader protected by singleflight.

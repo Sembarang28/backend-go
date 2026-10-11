@@ -1,3 +1,5 @@
+//go:build examples
+
 package http_test
 
 import (
@@ -18,12 +20,12 @@ type mockUserUsecase struct {
 	mock.Mock
 }
 
-func (m *mockUserUsecase) GetUser(ctx context.Context, id int) (*domain.User, error) {
+func (m *mockUserUsecase) GetUser(ctx context.Context, id int) (*domain.ExampleUser, error) {
 	args := m.Called(ctx, id)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*domain.User), args.Error(1)
+	return args.Get(0).(*domain.ExampleUser), args.Error(1)
 }
 
 func TestUserHTTPHandler_GetByID(t *testing.T) {
@@ -31,10 +33,10 @@ func TestUserHTTPHandler_GetByID(t *testing.T) {
 	mockUC := new(mockUserUsecase)
 
 	r := gin.New()
-	handlerhttp.RegisterUserRoutes(r, mockUC)
+	handlerhttp.RegisterExampleUserRoutes(r, mockUC)
 
 	// Success
-	mockUC.On("GetUser", mock.Anything, 1).Return(&domain.User{
+	mockUC.On("GetUser", mock.Anything, 1).Return(&domain.ExampleUser{
 		ID:    1,
 		Name:  "Test",
 		Email: "test@example.com",

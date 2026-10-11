@@ -3,26 +3,24 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	_ "go.uber.org/automaxprocs"
 
 	"backend-go/internal/config"
-	"backend-go/internal/events"
-	handlergrpc "backend-go/internal/handler/grpc"
-	handlerhttp "backend-go/internal/handler/http"
+	"backend-go/internal/pkg/database"
 	"backend-go/internal/pkg/health"
 	"backend-go/internal/pkg/metrics"
 	"backend-go/internal/pkg/middleware"
-	"backend-go/internal/pkg/outbox"
+	"backend-go/internal/pkg/redisclient"
 	"backend-go/internal/pkg/shutdown"
 	"backend-go/internal/pkg/telemetry"
-	"backend-go/internal/repository"
-	"backend-go/internal/usecase"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
@@ -67,17 +65,79 @@ func main() {
 	promMetrics := metrics.InitMetrics(nil)
 	healthMgr := health.NewManager(2 * time.Second)
 
-	// 6. Initialize Redis Client (Graceful fallback)
-	var redisClient *redis.Client
-	if cfg.RedisAddress != "" {
-		slog.Info("Connecting to Redis", "address", cfg.RedisAddress)
-		redisClient = redis.NewClient(&redis.Options{
-			Addr: cfg.RedisAddress,
+	// 6. Initialize PostgreSQL primary and optional read replicas.
+	var dbGroup *database.DBGroup
+	if cfg.DBPrimaryDSN != "" || len(cfg.DBReplicaDSNs) > 0 {
+		if cfg.DBPrimaryDSN == "" {
+			slog.Error("DB_PRIMARY_DSN is required when PostgreSQL replicas are configured")
+			os.Exit(1)
+		}
+		connectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		var err error
+		dbGroup, err = database.OpenPostgresGroup(connectCtx, cfg.DBPrimaryDSN, cfg.DBReplicaDSNs, database.PoolConfig{
+			MaxOpenConns:    cfg.DBMaxOpenConns,
+			MaxIdleConns:    cfg.DBMaxIdleConns,
+			ConnMaxLifetime: cfg.DBConnMaxLifetime,
+			ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
 		})
+		cancel()
+		if err != nil {
+			slog.Error("Failed to connect to PostgreSQL primary/replicas", "error", err)
+			os.Exit(1)
+		}
+		healthMgr.Register("postgres-primary", health.CheckerFunc(func(ctx context.Context) error {
+			return dbGroup.Write().PingContext(ctx)
+		}))
+		for i, replica := range dbGroup.Replicas {
+			replica := replica
+			healthMgr.Register(fmt.Sprintf("postgres-replica-%d", i), health.CheckerFunc(func(ctx context.Context) error {
+				return replica.PingContext(ctx)
+			}))
+		}
+		slog.Info("Connected to PostgreSQL", "replica_count", len(dbGroup.Replicas))
+	} else {
+		slog.Info("PostgreSQL is not configured")
+	}
+	var dbStatsCancel context.CancelFunc
+	var dbStatsWG sync.WaitGroup
+	if dbGroup != nil {
+		statsCtx, cancel := context.WithCancel(context.Background())
+		dbStatsCancel = cancel
+		dbStatsWG.Add(1)
+		go func() {
+			defer dbStatsWG.Done()
+			recordDBPoolStats(promMetrics, dbGroup)
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-statsCtx.Done():
+					return
+				case <-ticker.C:
+					recordDBPoolStats(promMetrics, dbGroup)
+				}
+			}
+		}()
+	}
+
+	// 7. Initialize a single-node or cluster Redis UniversalClient.
+	var redisClient redis.UniversalClient
+	if len(cfg.RedisAddresses) > 0 {
+		var err error
+		redisClient, err = redisclient.New(cfg.RedisMode, cfg.RedisAddresses, cfg.RedisPassword, cfg.RedisDB)
+		if err != nil {
+			slog.Error("Invalid Redis configuration", "error", err)
+			if dbGroup != nil {
+				_ = dbGroup.Close()
+			}
+			os.Exit(1)
+		}
+		slog.Info("Connecting to Redis", "mode", cfg.RedisMode, "addresses", cfg.RedisAddresses)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if err := redisClient.Ping(ctx).Err(); err != nil {
 			slog.Warn("Failed to connect to Redis, running without cache", "error", err)
+			_ = redisClient.Close()
 			redisClient = nil
 		} else {
 			slog.Info("Successfully connected to Redis")
@@ -108,28 +168,7 @@ func main() {
 		}
 	}
 
-	// 8. Wire Domain Dependencies
-	eventPublisher := events.NewNATSEventPublisher(natsConn)
-	userRepo := repository.NewUserRepository(redisClient, cfg.CacheTTL)
-	userUsecase := usecase.NewUserUsecase(userRepo, eventPublisher)
-
-	// 9. Initialize Outbox Worker & Retention Cleaner
-	outboxRepo := outbox.NewMemoryRepository()
-	var outboxLock outbox.DistributedLock
-	if redisClient != nil {
-		outboxLock = outbox.NewRedisDistributedLock(redisClient)
-	}
-
-	outboxWorker := outbox.NewWorker(outbox.DefaultConfig(), outboxRepo, outboxLock, outbox.MessagePublisher(nil))
-	outboxCleaner := outbox.NewCleaner(outbox.DefaultCleanerConfig(), outboxRepo, outboxLock)
-
-	outboxCtx, outboxCancel := context.WithCancel(context.Background())
-	if outboxLock != nil {
-		outboxWorker.Start(outboxCtx)
-		outboxCleaner.Start(outboxCtx)
-	}
-
-	// 10. Setup HTTP Router & Hardened Middleware Pipeline
+	// 9. Setup HTTP Router & Hardened Middleware Pipeline
 	r := gin.New()
 	r.Use(middleware.RecoveryMiddleware())
 	r.Use(middleware.SecurityHeaders())
@@ -145,8 +184,7 @@ func main() {
 	r.GET("/healthz/ready", healthMgr.ReadinessHandler)
 	r.GET("/metrics", metrics.Handler())
 
-	// Register Business Routes
-	handlerhttp.RegisterUserRoutes(r, userUsecase)
+	stopExamples := wireExamples(r, cfg, dbGroup, redisClient, natsConn)
 
 	// 11. Setup gRPC Server with Panic Recovery and Tracing
 	grpcSrv := grpc.NewServer(
@@ -157,8 +195,6 @@ func main() {
 			middleware.GRPCUnaryTimeoutInterceptor(10*time.Second),
 		),
 	)
-	_ = handlergrpc.NewUserGRPCHandler(userUsecase)
-
 	// 12. Configure & Start HTTP Server
 	httpSrv := &http.Server{
 		Addr:         cfg.ServerAddress,
@@ -220,16 +256,24 @@ func main() {
 		},
 	)
 
-	// Phase 3: Stop background Outbox Worker & Cleaner
+	// Phase 3: Stop optional example background workers.
 	shutdownEngine.AddPhase(shutdown.Task{
-		Name: "Stop Outbox Worker and Cleaner",
+		Name: "Stop Example Workers",
 		Fn: func(ctx context.Context) error {
-			outboxCancel()
-			outboxWorker.Stop()
-			outboxCleaner.Stop()
+			stopExamples()
 			return nil
 		},
 	})
+	if dbStatsCancel != nil {
+		shutdownEngine.AddPhase(shutdown.Task{
+			Name: "Stop PostgreSQL Metrics Collector",
+			Fn: func(ctx context.Context) error {
+				dbStatsCancel()
+				dbStatsWG.Wait()
+				return nil
+			},
+		})
+	}
 
 	// Phase 4: Close Connection Pools & Clients
 	shutdownEngine.AddPhase(
@@ -238,6 +282,15 @@ func main() {
 			Fn: func(ctx context.Context) error {
 				if redisClient != nil {
 					return redisClient.Close()
+				}
+				return nil
+			},
+		},
+		shutdown.Task{
+			Name: "Close PostgreSQL Connection Pools",
+			Fn: func(ctx context.Context) error {
+				if dbGroup != nil {
+					return dbGroup.Close()
 				}
 				return nil
 			},
@@ -256,5 +309,15 @@ func main() {
 	// Block until signal received and execute phased shutdown
 	if err := shutdownEngine.ListenAndServe(); err != nil {
 		slog.Error("Shutdown completed with error", "error", err)
+	}
+}
+
+func recordDBPoolStats(promMetrics *metrics.Metrics, group *database.DBGroup) {
+	if group == nil {
+		return
+	}
+	promMetrics.RecordDBStats("primary", group.Write().Stats())
+	for i, replica := range group.Replicas {
+		promMetrics.RecordDBStats(fmt.Sprintf("replica-%d", i), replica.Stats())
 	}
 }

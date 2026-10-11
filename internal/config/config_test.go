@@ -33,3 +33,15 @@ func TestLoadConfig(t *testing.T) {
 	assert.Equal(t, int64(500), cfg.RateLimitRequests)
 	assert.Equal(t, 10*time.Second, cfg.ReadTimeout)
 }
+
+func TestLoadRedisClusterConfig(t *testing.T) {
+	t.Setenv("REDIS_MODE", "cluster")
+	t.Setenv("REDIS_ADDRESSES", "redis-0:6379, redis-1:6379")
+	t.Setenv("REDIS_DB", "0")
+	t.Setenv("DB_REPLICA_DSNS", "postgres://replica-0/db, postgres://replica-1/db")
+
+	cfg := config.LoadConfig()
+	assert.Equal(t, "cluster", cfg.RedisMode)
+	assert.Equal(t, []string{"redis-0:6379", "redis-1:6379"}, cfg.RedisAddresses)
+	assert.Equal(t, []string{"postgres://replica-0/db", "postgres://replica-1/db"}, cfg.DBReplicaDSNs)
+}

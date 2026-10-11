@@ -142,6 +142,9 @@ func (e *Engine) loadMigrations() ([]Migration, error) {
 		if err != nil {
 			continue
 		}
+		if strings.HasPrefix(parts[1], "example_") && !includeExampleMigrations {
+			continue
+		}
 
 		content, err := e.fs.ReadFile(filepath.Join("sql", entry.Name()))
 		if err != nil {

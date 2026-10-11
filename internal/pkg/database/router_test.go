@@ -2,12 +2,23 @@ package database_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"backend-go/internal/pkg/database"
 
 	"github.com/stretchr/testify/assert"
 )
+
+func TestDBGroupReadPrimary(t *testing.T) {
+	primary := &sql.DB{}
+	replica := &sql.DB{}
+	group := database.NewDBGroup(primary, replica)
+
+	assert.Same(t, primary, group.ReadPrimary())
+	assert.Same(t, primary, group.Write())
+	assert.Same(t, replica, group.Read())
+}
 
 func TestDynamicTenantRouter(t *testing.T) {
 	defaultDB := database.NewDBGroup(nil)

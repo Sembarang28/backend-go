@@ -1,3 +1,5 @@
+//go:build examples
+
 package usecase
 
 import (
@@ -9,12 +11,12 @@ import (
 )
 
 type userUsecase struct {
-	repo           domain.UserRepository
-	eventPublisher domain.EventPublisher
+	repo           domain.ExampleUserRepository
+	eventPublisher domain.ExampleEventPublisher
 }
 
-// NewUserUsecase creates a new instance of UserUsecase with optional event publisher injection.
-func NewUserUsecase(repo domain.UserRepository, eventPublisher domain.EventPublisher) domain.UserUsecase {
+// NewExampleUserUsecase creates a new instance of UserUsecase with optional event publisher injection.
+func NewExampleUserUsecase(repo domain.ExampleUserRepository, eventPublisher domain.ExampleEventPublisher) domain.ExampleUserUsecase {
 	return &userUsecase{
 		repo:           repo,
 		eventPublisher: eventPublisher,
@@ -22,9 +24,9 @@ func NewUserUsecase(repo domain.UserRepository, eventPublisher domain.EventPubli
 }
 
 // GetUser retrieves user data by ID after performing business validation.
-func (u *userUsecase) GetUser(ctx context.Context, id int) (*domain.User, error) {
+func (u *userUsecase) GetUser(ctx context.Context, id int) (*domain.ExampleUser, error) {
 	if id <= 0 {
-		return nil, domain.ErrInvalidUserID
+		return nil, domain.ErrInvalidExampleUserID
 	}
 
 	user, err := u.repo.GetByID(ctx, id)
@@ -34,13 +36,13 @@ func (u *userUsecase) GetUser(ctx context.Context, id int) (*domain.User, error)
 
 	// Publish domain event asynchronously / non-blocking
 	if u.eventPublisher != nil {
-		event := domain.UserAccessedEvent{
+		event := domain.ExampleUserAccessedEvent{
 			UserID:     user.ID,
 			UserName:   user.Name,
 			AccessedAt: time.Now(),
 			Source:     "database_or_cache",
 		}
-		go func(evt domain.UserAccessedEvent) {
+		go func(evt domain.ExampleUserAccessedEvent) {
 			// Create a detached background context for async event publishing
 			asyncCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()

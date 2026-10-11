@@ -47,8 +47,14 @@ func NewDBGroup(primary *sql.DB, replicas ...*sql.DB) *DBGroup {
 	}
 }
 
-// Write returns Primary database instance for mutation queries.
+// Write returns the primary database for mutations.
 func (g *DBGroup) Write() *sql.DB {
+	return g.Primary
+}
+
+// ReadPrimary returns the primary database for reads that require the latest
+// committed data, such as read-after-write and consistency-critical decisions.
+func (g *DBGroup) ReadPrimary() *sql.DB {
 	return g.Primary
 }
 
@@ -73,9 +79,9 @@ type TenantResolver interface {
 
 // DynamicTenantRouter routes queries to tenant-specific DBGroup based on context tenant ID.
 type DynamicTenantRouter struct {
-	mu         sync.RWMutex
-	defaultDB  *DBGroup
-	tenants    map[string]*DBGroup
+	mu        sync.RWMutex
+	defaultDB *DBGroup
+	tenants   map[string]*DBGroup
 }
 
 // NewDynamicTenantRouter initializes DynamicTenantRouter.
