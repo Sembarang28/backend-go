@@ -14,6 +14,7 @@ backend-go/
 │   ├── docker/                     # Multi-stage hardened Dockerfile
 │   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
 ├── docs/
+│   ├── audit_guide.md                       # Pilihan audit log-only atau persistence PostgreSQL
 │   ├── outbox_guide.md                      # PostgreSQL persistence, transactions, worker setup, and adapter extensibility
 │   ├── reconciliation_guide.md              # Implementing and operating reconciliation jobs
 │   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
@@ -90,7 +91,7 @@ backend-go/
 ### 7. Security, Auditing & Panic Recovery
 - **Panic Recovery Middleware (`internal/pkg/middleware/recovery.go`)**: Recovers runtime panics across Gin and gRPC with structured JSON logs preserving contextual trace identifiers.
 - **Security Headers & Strict CORS (`internal/pkg/middleware/security.go`)**: OWASP-aligned response headers (`X-Frame-Options`, `X-Content-Type-Options`, `HSTS`, `CSP`) and fine-grained CORS.
-- **Immutable Audit Trail (`internal/pkg/audit`)**: Captures mutation events with actor, before/after states, IP, user-agent, and trace IDs.
+- **Audit Trail (`internal/pkg/audit`)**: Catat aksi penting ke structured log saja atau simpan secara persisten di PostgreSQL; gunakan transaksi yang sama dengan perubahan bisnis jika audit wajib atomik. Lihat [Panduan Paket Audit](docs/audit_guide.md).
 - **Outbox Retention Cleaner (`internal/pkg/outbox/cleaner.go`)**: Distributed locked background worker that purges processed records to prevent table bloat.
 
 ### 8. High Performance & Testability Patterns

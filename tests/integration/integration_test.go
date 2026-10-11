@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"backend-go/internal/domain"
+	"backend-go/internal/pkg/audit"
 	"backend-go/internal/pkg/cache"
 	"backend-go/internal/pkg/database"
 	"backend-go/internal/pkg/database/migration"
 	"backend-go/internal/pkg/outbox"
+	"backend-go/internal/pkg/telemetry"
 	"backend-go/internal/repository"
 	"backend-go/internal/usecase"
 
@@ -189,4 +191,74 @@ func TestPostgresOutboxRepository(t *testing.T) {
 		Payload:         []byte(`{}`),
 		FailureReason:   "manual",
 	}))
+}
+
+func TestPostgresAuditor(t *testing.T) {
+	ctx := context.Background()
+
+	pgContainer, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("audit_test"),
+		tcpostgres.WithUsername("testuser"),
+		tcpostgres.WithPassword("testpass"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
+
+	connStr, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	db, err := sql.Open("pgx", connStr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, db.PingContext(ctx))
+	require.NoError(t, migration.NewEngine().Run(ctx, db))
+	_, err = db.ExecContext(ctx, "CREATE TABLE audit_test_business (id INT PRIMARY KEY)")
+	require.NoError(t, err)
+
+	event := audit.AuditEvent{
+		ActorID:        "user-101",
+		Action:         "user.update",
+		TargetResource: "User",
+		ResourceID:     "101",
+		PayloadBefore:  map[string]string{"role": "member"},
+		PayloadAfter:   map[string]string{"role": "admin"},
+		IPAddress:      "192.0.2.1",
+		UserAgent:      "integration-test",
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, "INSERT INTO audit_test_business (id) VALUES (1)")
+	require.NoError(t, err)
+	require.NoError(t, audit.NewPostgresAuditor(tx).Log(ctx, event))
+	require.NoError(t, tx.Rollback())
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_test_business").Scan(&count))
+	assert.Zero(t, count)
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM audit_events WHERE action = $1", event.Action).Scan(&count))
+	assert.Zero(t, count, "audit insert must roll back with the business transaction")
+
+	sc := telemetry.NewSpanContext()
+	ctx = telemetry.ContextWithSpan(ctx, sc)
+	require.NoError(t, audit.NewPostgresAuditor(db).Log(ctx, event))
+
+	var (
+		id, traceID, spanID, userAgent string
+		before, after                  []byte
+	)
+	err = db.QueryRowContext(ctx, `
+		SELECT id, trace_id, span_id, user_agent, payload_before, payload_after
+		FROM audit_events WHERE action = $1`, event.Action).Scan(
+		&id, &traceID, &spanID, &userAgent, &before, &after,
+	)
+	require.NoError(t, err)
+	assert.NotEmpty(t, id)
+	assert.Equal(t, sc.TraceID, traceID)
+	assert.Equal(t, sc.SpanID, spanID)
+	assert.Equal(t, event.UserAgent, userAgent)
+	assert.JSONEq(t, `{"role":"member"}`, string(before))
+	assert.JSONEq(t, `{"role":"admin"}`, string(after))
 }

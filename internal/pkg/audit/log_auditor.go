@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// AuditEvent represents an immutable audit record for sensitive operations.
+// AuditEvent represents an audit record for sensitive operations.
 type AuditEvent struct {
 	ID             string      `json:"id"`
 	ActorID        string      `json:"actor_id"`
@@ -27,7 +28,7 @@ type AuditEvent struct {
 	CreatedAt      time.Time   `json:"created_at"`
 }
 
-// Auditor defines the interface for recording immutable audit logs.
+// Auditor defines the interface for recording audit events.
 type Auditor interface {
 	Log(ctx context.Context, event AuditEvent) error
 }
@@ -47,6 +48,35 @@ func NewStructuredAuditor(logger *slog.Logger) *StructuredAuditor {
 
 // Log records an audit event with contextual trace identifiers.
 func (a *StructuredAuditor) Log(ctx context.Context, event AuditEvent) error {
+	event = enrichEvent(ctx, event)
+	beforeJSON, err := json.Marshal(event.PayloadBefore)
+	if err != nil {
+		return fmt.Errorf("marshal audit payload before: %w", err)
+	}
+	afterJSON, err := json.Marshal(event.PayloadAfter)
+	if err != nil {
+		return fmt.Errorf("marshal audit payload after: %w", err)
+	}
+
+	a.logger.InfoContext(ctx, "AUDIT_TRAIL",
+		slog.String("audit_id", event.ID),
+		slog.String("actor_id", event.ActorID),
+		slog.String("action", event.Action),
+		slog.String("target_resource", event.TargetResource),
+		slog.String("resource_id", event.ResourceID),
+		slog.String("payload_before", string(beforeJSON)),
+		slog.String("payload_after", string(afterJSON)),
+		slog.String("ip_address", event.IPAddress),
+		slog.String("user_agent", event.UserAgent),
+		slog.String("trace_id", event.TraceID),
+		slog.String("span_id", event.SpanID),
+		slog.Time("created_at", event.CreatedAt),
+	)
+
+	return nil
+}
+
+func enrichEvent(ctx context.Context, event AuditEvent) AuditEvent {
 	if event.ID == "" {
 		event.ID = uuid.New().String()
 	}
@@ -62,22 +92,5 @@ func (a *StructuredAuditor) Log(ctx context.Context, event AuditEvent) error {
 			event.SpanID = sc.SpanID
 		}
 	}
-
-	beforeJSON, _ := json.Marshal(event.PayloadBefore)
-	afterJSON, _ := json.Marshal(event.PayloadAfter)
-
-	a.logger.InfoContext(ctx, "AUDIT_TRAIL",
-		slog.String("audit_id", event.ID),
-		slog.String("actor_id", event.ActorID),
-		slog.String("action", event.Action),
-		slog.String("target_resource", event.TargetResource),
-		slog.String("resource_id", event.ResourceID),
-		slog.String("payload_before", string(beforeJSON)),
-		slog.String("payload_after", string(afterJSON)),
-		slog.String("ip_address", event.IPAddress),
-		slog.String("trace_id", event.TraceID),
-		slog.Time("created_at", event.CreatedAt),
-	)
-
-	return nil
+	return event
 }
