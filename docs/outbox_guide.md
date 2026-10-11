@@ -1,34 +1,33 @@
-# Outbox Package Guide
+# Panduan Paket Outbox
 
-`internal/pkg/outbox` provides a repository contract, a PostgreSQL persistence
-adapter, an in-memory adapter for tests, a partitioned worker, Redis-based
-distributed locks, and a retention cleaner.
+`internal/pkg/outbox` menyediakan kontrak repository, adapter persistence
+PostgreSQL, adapter dalam memori untuk pengujian, worker berpartisi, distributed
+lock berbasis Redis, dan pembersih data kedaluwarsa.
 
-## Persistence and database support
+## Persistence dan dukungan basis data
 
-The worker and cleaner depend only on `outbox.Repository`. Use
-`outbox.NewPostgresRepository` for durable PostgreSQL storage or
-`outbox.NewMemoryRepository` for tests and local-only use. The PostgreSQL
-adapter uses Go's `database/sql`; the application owns the connection pool and
-the driver. This keeps connection lifecycle, credentials, and driver settings
-under application control.
+Worker dan cleaner hanya bergantung pada `outbox.Repository`. Gunakan
+`outbox.NewPostgresRepository` untuk penyimpanan PostgreSQL yang persisten atau
+`outbox.NewMemoryRepository` untuk pengujian dan penggunaan lokal saja. Adapter
+PostgreSQL menggunakan `database/sql` dari Go; aplikasi mengelola connection
+pool dan driver-nya. Dengan begitu, siklus hidup koneksi, kredensial, dan
+pengaturan driver tetap dikendalikan oleh aplikasi.
 
-The repository uses the `outbox_events` and `dlq_events` tables defined in
-`internal/pkg/database/migration/sql/000002_create_outbox_table.up.sql` and
-`000003_create_dlq_table.up.sql`. Apply the project's migrations before
-starting the worker:
+Repository menggunakan tabel `outbox_events` dan `dlq_events` yang didefinisikan
+di `internal/pkg/database/migration/sql/000002_create_outbox_table.up.sql` dan
+`000003_create_dlq_table.up.sql`. Jalankan migrasi proyek sebelum memulai worker:
 
 ```go
 if err := migration.NewEngine().Run(ctx, db); err != nil {
-    return fmt.Errorf("run database migrations: %w", err)
+    return fmt.Errorf("gagal menjalankan migrasi basis data: %w", err)
 }
 
 outboxRepo := outbox.NewPostgresRepository(db)
 ```
 
-The project integration test uses pgx's `database/sql` driver. Register and
-open the driver in the application (or choose another PostgreSQL-compatible
-driver):
+Pengujian integrasi proyek menggunakan driver `database/sql` dari pgx. Daftarkan
+dan buka driver di aplikasi (atau pilih driver lain yang kompatibel dengan
+PostgreSQL):
 
 ```go
 import (
@@ -44,11 +43,11 @@ if err != nil {
 defer db.Close()
 ```
 
-## Write events in the business transaction
+## Simpan event dalam transaksi bisnis
 
-To preserve the transactional outbox guarantee, save the business change and
-the outbox event using the same database transaction. Pass the transaction as
-the repository's `SQLExecutor`:
+Agar jaminan transactional outbox tetap terpenuhi, simpan perubahan bisnis dan
+event outbox dalam transaksi basis data yang sama. Berikan transaksi tersebut
+sebagai `SQLExecutor` repository:
 
 ```go
 tx, err := db.BeginTx(ctx, nil)
@@ -81,15 +80,16 @@ if err := tx.Commit(); err != nil {
 }
 ```
 
-Only use this transaction-bound repository for writes in that transaction.
-Create a separate repository from `*sql.DB` for the long-running worker and
-cleaner, since they need their own connections.
+Gunakan repository yang terikat ke transaksi hanya untuk operasi tulis dalam
+transaksi tersebut. Buat repository terpisah dari `*sql.DB` untuk worker dan
+cleaner yang berjalan lama agar keduanya dapat menggunakan koneksinya sendiri.
 
-## Start the worker
+## Jalankan worker
 
-The worker polls each configured partition, acquires a distributed lock for
-that partition, and publishes eligible events. Provide a `DistributedLock`
-implementation; for multi-instance deployments, use the included Redis lock.
+Worker melakukan polling pada setiap partisi yang dikonfigurasi, mengambil
+distributed lock untuk partisi tersebut, lalu menerbitkan event yang siap
+diproses. Berikan implementasi `DistributedLock`; untuk deployment beberapa
+instance, gunakan Redis lock yang tersedia.
 
 ```go
 repo := outbox.NewPostgresRepository(db)
@@ -97,57 +97,62 @@ lock := outbox.NewRedisDistributedLock(redisClient)
 worker := outbox.NewWorker(outbox.DefaultConfig(), repo, lock, publisher)
 
 worker.Start(ctx)
-// During shutdown, cancel ctx and then wait for the worker to stop.
+// Saat shutdown, batalkan ctx lalu tunggu worker berhenti.
 worker.Stop()
 ```
 
-Run one cleaner per deployment (the Redis lock prevents concurrent cleanups):
+Jalankan satu cleaner untuk setiap deployment; Redis lock mencegah beberapa
+cleaner berjalan bersamaan:
 
 ```go
 cleaner := outbox.NewCleaner(outbox.DefaultCleanerConfig(), repo, lock)
 cleaner.Start(ctx)
-// During shutdown:
+// Saat shutdown:
 cleaner.Stop()
 ```
 
-The cleaner removes only published events older than the configured retention
-period. DLQ records are retained for application-managed inspection and
-redrive.
+Cleaner hanya menghapus event berstatus published yang lebih lama dari masa
+retensi yang dikonfigurasi. Record DLQ tetap disimpan agar dapat diperiksa dan
+dikirim ulang oleh aplikasi.
 
-## Delivery and operational behavior
+## Pengiriman dan perilaku operasional
 
-- Publishing is **at least once**, not exactly once. A process can publish an
-  event and terminate before recording it as published. Consumers should
-  deduplicate by event ID or otherwise be idempotent.
-- Failed publishes are retried with exponential backoff. After the worker's
-  `MaxRetries` threshold, the event is marked `DLQ` and copied to `dlq_events`.
-- `Save` is idempotent by event ID (upsert). Use stable, unique event IDs.
-- `FetchPendingBatch` returns pending events and failed events whose retry time
-  has arrived, ordered by creation time within a partition.
-- Configure the worker's `PartitionCount` to match the range used when
-  assigning event partitions. Changing the count requires a coordinated
-  rollout so producers and workers agree on partition assignment.
+- Pengiriman bersifat **at least once**, bukan exactly once. Proses dapat
+  menerbitkan event lalu berhenti sebelum menandainya sebagai published.
+  Consumer sebaiknya mendeduplikasi berdasarkan ID event atau dibuat idempoten.
+- Kegagalan penerbitan akan dicoba kembali dengan jeda eksponensial. Setelah
+  mencapai batas `MaxRetries` worker, event ditandai `DLQ` dan disalin ke
+  `dlq_events`.
+- `Save` bersifat idempoten berdasarkan ID event (upsert). Gunakan ID event
+  yang stabil dan unik.
+- `FetchPendingBatch` mengembalikan event pending dan event failed yang waktu
+  percobaan ulangnya telah tiba, diurutkan berdasarkan waktu pembuatan dalam
+  setiap partisi.
+- Atur `PartitionCount` worker agar sesuai dengan rentang partisi yang digunakan
+  saat menetapkan partisi event. Perubahan jumlah partisi memerlukan rollout
+  terkoordinasi agar producer dan worker menggunakan pemetaan partisi yang sama.
 
-## Adding support for another database
+## Tambahkan dukungan untuk basis data lain
 
-Keep business code, `Worker`, and `Cleaner` using `outbox.Repository`; do not
-add database-specific branches to those components. To support another
-database:
+Pastikan kode bisnis, `Worker`, dan `Cleaner` tetap menggunakan
+`outbox.Repository`; jangan tambahkan cabang khusus basis data ke komponen
+tersebut. Untuk mendukung basis data lain:
 
-1. Implement every method in `outbox.Repository` in a separate adapter, such as
-   `MySQLRepository`.
-2. Keep its SQL, placeholder syntax, locking/claim semantics, and schema
-   migrations specific to that database.
-3. Preserve the observable contract: retry scheduling, partition filtering,
-   status transitions, DLQ behavior, retention limits, and context/error
-   propagation.
-4. Ensure moving an event to the DLQ and updating its source status are atomic.
-   Use one statement or a transaction.
-5. Add database integration tests for transactions, concurrent workers,
-   retries, DLQ, and bounded cleanup.
+1. Implementasikan semua method `outbox.Repository` dalam adapter terpisah,
+   misalnya `MySQLRepository`.
+2. Sesuaikan SQL, sintaks placeholder, mekanisme penguncian/pengambilan record,
+   dan migrasi skema dengan basis data tersebut.
+3. Pertahankan kontrak perilaku: jadwal percobaan ulang, filter partisi,
+   transisi status, perilaku DLQ, batas retensi, serta penerusan context dan
+   error.
+4. Pastikan pemindahan event ke DLQ dan perubahan status sumber berlangsung
+   secara atomik, menggunakan satu statement atau transaksi.
+5. Tambahkan pengujian integrasi untuk transaksi, worker yang berjalan
+   bersamaan, percobaan ulang, DLQ, dan pembersihan dengan batas jumlah record.
 
-`SQLExecutor` is only the adapter's minimal `database/sql` query surface; it is
-not intended to make SQL dialects interchangeable. For a database that does
-not use `database/sql`, its adapter can implement `Repository` directly and
-use its native client. The application selects the adapter during dependency
-injection; no worker or use-case changes are needed.
+`SQLExecutor` hanya menyediakan permukaan query `database/sql` minimum yang
+dibutuhkan adapter; interface ini tidak membuat dialek SQL dapat dipertukarkan.
+Untuk basis data yang tidak menggunakan `database/sql`, adapter dapat langsung
+mengimplementasikan `Repository` menggunakan client native-nya. Aplikasi
+memilih adapter saat dependency injection, tanpa perlu mengubah worker atau
+use-case.

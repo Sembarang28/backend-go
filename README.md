@@ -14,7 +14,8 @@ backend-go/
 │   ├── docker/                     # Multi-stage hardened Dockerfile
 │   └── k8s/                        # Kubernetes Deployment, Job, NetPol, HPA, PDB manifests
 ├── docs/
-│   ├── outbox_guide.md            # PostgreSQL persistence, transactions, worker setup, and adapter extensibility
+│   ├── outbox_guide.md                      # PostgreSQL persistence, transactions, worker setup, and adapter extensibility
+│   ├── reconciliation_guide.md              # Implementing and operating reconciliation jobs
 │   ├── configuration_management_migration_guide.md # Centralized Config (Consul/Vault/ESO) migration guide
 │   ├── project.md                  # Comprehensive architecture documentation
 │   └── proto_migration_guide.md    # Centralized Protobuf migration guide
@@ -94,7 +95,7 @@ backend-go/
 
 ### 8. High Performance & Testability Patterns
 - **Singleflight Cache Stampede Protection (`internal/pkg/cache`)**: Utilizes `golang.org/x/sync/singleflight` to suppress redundant database queries during concurrent cache misses on high-traffic keys.
-- **Self-Healing Reconciliation Engine (`internal/pkg/reconciliation`)**: Background distributed-locked reconciliation daemon to resolve stuck/pending transactions with external providers.
+- **Self-Healing Reconciliation Engine (`internal/pkg/reconciliation`)**: Background distributed-locked reconciliation daemon to resolve stuck/pending transactions with external providers. See the [Reconciliation Guide](docs/reconciliation_guide.md) for implementing and registering jobs.
 - **Integration Testing with Testcontainers (`tests/integration`)**: Automated Docker-based integration tests verifying PostgreSQL, Redis, DDL migrations, and Outbox locking end-to-end (`make test-integration`).
 
 ---
