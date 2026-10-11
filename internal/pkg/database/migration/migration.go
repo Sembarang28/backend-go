@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -102,14 +103,18 @@ func (e *Engine) initSchema(ctx context.Context, db *sql.DB) error {
 	return err
 }
 
-func (e *Engine) getAppliedVersions(ctx context.Context, db *sql.DB) (map[int]bool, error) {
+func (e *Engine) getAppliedVersions(ctx context.Context, db *sql.DB) (applied map[int]bool, retErr error) {
 	rows, err := db.QueryContext(ctx, "SELECT version FROM schema_migrations")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close applied migrations rows: %w", closeErr))
+		}
+	}()
 
-	applied := make(map[int]bool)
+	applied = make(map[int]bool)
 	for rows.Next() {
 		var v int
 		if err := rows.Scan(&v); err != nil {

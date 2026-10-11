@@ -26,7 +26,11 @@ func main() {
 		slog.Error("Failed to open PostgreSQL primary", "error", err)
 		os.Exit(1)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			slog.Error("Failed to close PostgreSQL connection", "error", err)
+		}
+	}()
 	database.ConfigurePool(db, database.PoolConfig{
 		MaxOpenConns:    1,
 		MaxIdleConns:    1,

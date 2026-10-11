@@ -20,7 +20,7 @@ func New(mode string, addresses []string, password string, db int) (redis.Univer
 	switch mode {
 	case ModeSingle:
 		if len(addresses) != 1 {
-			return nil, fmt.Errorf("Redis single mode requires exactly one address, got %d", len(addresses))
+			return nil, fmt.Errorf("redis single mode requires exactly one address, got %d", len(addresses))
 		}
 		return redis.NewClient(&redis.Options{
 			Addr:     addresses[0],
@@ -29,7 +29,7 @@ func New(mode string, addresses []string, password string, db int) (redis.Univer
 		}), nil
 	case ModeCluster:
 		if db != 0 {
-			return nil, fmt.Errorf("Redis Cluster does not support selecting a logical database: REDIS_DB must be 0")
+			return nil, fmt.Errorf("redis cluster does not support selecting a logical database: REDIS_DB must be 0")
 		}
 		return redis.NewClusterClient(&redis.ClusterOptions{
 			Addrs:    addresses,

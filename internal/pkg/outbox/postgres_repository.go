@@ -104,7 +104,7 @@ func (p *PostgresRepository) Save(ctx context.Context, event *OutboxEvent) error
 	return nil
 }
 
-func (p *PostgresRepository) FetchPendingBatch(ctx context.Context, partition int, limit int) ([]*OutboxEvent, error) {
+func (p *PostgresRepository) FetchPendingBatch(ctx context.Context, partition int, limit int) (events []*OutboxEvent, retErr error) {
 	if err := p.checkDB(); err != nil {
 		return nil, err
 	}
@@ -126,9 +126,13 @@ func (p *PostgresRepository) FetchPendingBatch(ctx context.Context, partition in
 	if err != nil {
 		return nil, fmt.Errorf("fetch pending outbox events for partition %d: %w", partition, err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close pending outbox event rows: %w", closeErr))
+		}
+	}()
 
-	events := make([]*OutboxEvent, 0)
+	events = make([]*OutboxEvent, 0)
 	for rows.Next() {
 		event := new(OutboxEvent)
 		var headers []byte

@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -11,19 +10,11 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
-	os.Setenv("SERVER_ADDRESS", ":9090")
-	os.Setenv("APP_ENV", "test")
-	os.Setenv("LOG_LEVEL", "debug")
-	os.Setenv("OUTBOX_PARTITIONS", "16")
-	os.Setenv("RATE_LIMIT_REQUESTS", "500")
-
-	defer func() {
-		os.Unsetenv("SERVER_ADDRESS")
-		os.Unsetenv("APP_ENV")
-		os.Unsetenv("LOG_LEVEL")
-		os.Unsetenv("OUTBOX_PARTITIONS")
-		os.Unsetenv("RATE_LIMIT_REQUESTS")
-	}()
+	t.Setenv("SERVER_ADDRESS", ":9090")
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("OUTBOX_PARTITIONS", "16")
+	t.Setenv("RATE_LIMIT_REQUESTS", "500")
 
 	cfg := config.LoadConfig()
 	assert.Equal(t, ":9090", cfg.ServerAddress)
